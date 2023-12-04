@@ -1,7 +1,10 @@
 from openai import AsyncOpenAI
 from charset_normalizer import detect
+from time import perf_counter
 import tiktoken
 import asyncio
+
+import traceback
 
 client = AsyncOpenAI()
 tokens_total = 0
@@ -13,7 +16,7 @@ def detect_encoding(file_path):
 
     return encoding_method
 
-def chunk_subtitles(input_file, max_chunk_size=1000):
+def chunk_subtitles(input_file, timeframe_chunks, max_chunk_size=1000):
     # first detect encoding
     encoding_method = detect_encoding(input_file)
     # now read and chunk it
@@ -24,11 +27,20 @@ def chunk_subtitles(input_file, max_chunk_size=1000):
     current_chunk = ''
 
     for subtitle in subtitles:
-        if len(current_chunk) + len(subtitle) + 2 <= max_chunk_size:
-            current_chunk += subtitle + '\n\n'
+        split = subtitle.split('\n', 2)
+
+        if len(split) == 3:
+            no, time, text = split
+        else:
+            break
+        timeframe_chunks.append({"no": no, "time": time})
+        no_timeframe_subtitle_string = f'{no}\n{text}\n\n'
+
+        if len(current_chunk) + len(no_timeframe_subtitle_string) + 2 <= max_chunk_size:
+            current_chunk += f'{no}\n{text}\n\n'
         else:
             chunks.append(current_chunk.strip())
-            current_chunk = subtitle + '\n\n'
+            current_chunk = f'{no}\n{text}\n\n'
 
     if current_chunk:
         chunks.append(current_chunk.strip())
@@ -54,33 +66,62 @@ async def translate_chunk(chunk, language):
         "You are a subtitles translator. While translating into user desired language keep the same format as input" \
         + "Translate following into " + language + "\n\n" + chunk + str(completion.choices[0].message)))
     tokens_total += num_tokens
-    print('OpenAI finish reason: ', completion.choices[0].finish_reason)
-    print('OpenAI usage data: ', completion.usage)
 
     return completion.choices[0].message.content
+
+def format_translation(translated_content, timeframe_chunks):
+    formatted_translation = ''
+
+    translated_parts = translated_content.split('\n\n')
+    start_time = perf_counter()
+
+    try:
+        for part in translated_parts:
+            no, content = part.split('\n', 1)
+            matching_time_dict = next((td for td in timeframe_chunks if td['no'] == no), None)
+
+            if matching_time_dict:
+                time = matching_time_dict['time']
+                formatted_translation += f'{no}\n{time}\n{content}\n\n'
+    except ValueError as e:
+        print('ValueError: ', e)
+        print('Traceback: ', traceback.format_exc())
+    except Exception as e:
+        print('Exception: ', e)
+        print('Traceback: ', traceback.format_exc())
+
+    end_time = perf_counter()
+    print('format time:', end_time - start_time)
+
+    return formatted_translation
+
 
 
 async def main():
     input_subtitles = 'subtitle_source.srt'
+    timeframe_chunks = []
     # miscalculated it to 8000 initially, then recalculated to 4000 which was almost OK, but an iteration slipped
     # through 4096 margin, thus 3500 should be safe
-    chunks = chunk_subtitles(input_subtitles, 3500)
+    chunks = chunk_subtitles(input_subtitles, timeframe_chunks, 3500)
+
+    with open('raw_chunks.srt', 'w', encoding='utf-8') as output_file:
+        output_file.write(str('\n\n'.join(chunks)))
 
     print('Enter translation language:')
     lang = input()
     print('Translating into...', lang)
 
-    translated_chunks = await asyncio.gather(
+    translated_content = await asyncio.gather(
         *[translate_chunk(chunk, lang) for chunk in chunks]
     )
 
-    print('Total tokens:', tokens_total )
+    translated_content_str = '\n\n'.join(translated_content)
+    formatted_translation = format_translation(translated_content_str, timeframe_chunks)
 
-    translated_srt = '\n\n'.join(translated_chunks)
+    print('Total tokens:', tokens_total)
 
     with open('subtitle_translated.srt', 'w', encoding='utf-8') as output_file:
-        output_file.write(translated_srt)
-
+        output_file.write(formatted_translation)
 
 asyncio.run(main())
 
