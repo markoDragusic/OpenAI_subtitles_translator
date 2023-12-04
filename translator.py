@@ -104,9 +104,6 @@ async def main():
     # through 4096 margin, thus 3500 should be safe
     chunks = chunk_subtitles(input_subtitles, timeframe_chunks, 3500)
 
-    with open('raw_chunks.srt', 'w', encoding='utf-8') as output_file:
-        output_file.write(str('\n\n'.join(chunks)))
-
     print('Enter translation language:')
     lang = input()
     print('Translating into...', lang)
